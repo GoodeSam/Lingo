@@ -258,7 +258,7 @@ class ResultPanel:
         # Pre-calculate the Chinese row height so the panel size never changes
         y += 12
         zh_row_build_y = y
-        a_zh = _attr(zh_text, _TEXT_YELLOW, 17, bold=True)
+        a_zh = _attr("                         " + zh_text, _TEXT_YELLOW, 17, bold=True)
         zh_rect = a_zh.boundingRectWithSize_options_context_(
             Cocoa.NSMakeSize(text_w - 32, 9999),
             Cocoa.NSStringDrawingUsesLineFragmentOrigin,
@@ -383,18 +383,18 @@ class ResultPanel:
         _pos   = r.get("part_of_speech", "")
         _def   = r.get("en_definition", "")
         _ex    = r.get("example", "")
-        _parts = []
-        if _word or _ipa:
-            _parts.append(f"{_word}  {_ipa}".strip() if _ipa else _word)
+        # First line: word /ipa/   pos   zh  (three spaces as separator)
+        _head = [f"{_word} {_ipa}".strip() if _ipa else _word]
         if _pos:
-            _parts.append(_pos)
+            _head.append(_pos)
         if _zh:
-            _parts.append(_zh)
+            _head.append(_zh)
+        _sections = ["   ".join(_head)]
         if _def:
-            _parts.append(_def)
+            _sections.append(_def)
         if _ex:
-            _parts.append(f'"{_ex}"')
-        copy_text = "\n".join(_parts)
+            _sections.append(f'"{_ex}"')
+        copy_text = "\n\n".join(_sections)
 
         copy_btn = Cocoa.NSButton.alloc().initWithFrame_(
             Cocoa.NSMakeRect(_PAD + btn_size + 4, total_h - _PAD_TOP - btn_size, btn_size, btn_size)
