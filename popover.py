@@ -90,10 +90,20 @@ class ResultPanel:
         self._key_monitor = None
         self._audio_handler = None
         self._copy_handler = None
+        self._chinese_handler = None
+        self._zh_copy_handler = None
         self._delegate = None
+        self._current_result: dict | None = None
 
     def show(self, result: dict):
+        self._current_result = result
+        self._do_show()
+
+    def _do_show(self):
         self.hide()
+        result = self._current_result
+        if result is None:
+            return
         Cocoa.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
 
         mode = result.get("mode", "sentence")
@@ -106,7 +116,6 @@ class ResultPanel:
         mx, my = _cursor_pos()
         screen = _screen_for_point(mx, my).visibleFrame()
 
-        # Cap height to screen and wrap in a scroll view if content overflows
         max_h = screen.size.height - 32
         if height > max_h:
             scroll = Cocoa.NSScrollView.alloc().initWithFrame_(
@@ -147,7 +156,6 @@ class ResultPanel:
         content.layer().setMasksToBounds_(True)
         content.layer().setBackgroundColor_(_PANEL_BG.CGColor())
 
-        # Delegate funnels ✕-button / Cmd-W closes through the same cleanup path
         delegate = _PanelDelegate.alloc().init()
         delegate._on_close = self._do_cleanup
         panel.setDelegate_(delegate)
@@ -187,6 +195,8 @@ class ResultPanel:
             self._key_monitor = None
         self._audio_handler = None
         self._copy_handler = None
+        self._chinese_handler = None
+        self._zh_copy_handler = None
         self._delegate = None
         self._panel = None
 
@@ -203,6 +213,7 @@ class ResultPanel:
         text_w = _PANEL_W - _PAD * 2
         y = _PAD_TOP + btn_size + 10
         views = []
+        zh_text = r.get("zh_translation", "")
 
         def add(text, color, size, bold=False, top_gap=0):
             nonlocal y
@@ -230,9 +241,8 @@ class ResultPanel:
             views.append(sep)
             y += 1
 
+        # Word heading
         add(r.get("original", r.get("word", "")), _TEXT_WHITE, 20, bold=True)
-        add(r.get("zh_translation", ""), _TEXT_YELLOW, 20, bold=True, top_gap=6)
-
         add_sep(top_gap=12)
 
         ipa = r.get("ipa", "")
@@ -245,6 +255,18 @@ class ResultPanel:
         if ex:
             add(f'"{ex}"', _TEXT_GREEN, 16, top_gap=8)
 
+        # Pre-calculate the Chinese row height so the panel size never changes
+        y += 12
+        zh_row_build_y = y
+        a_zh = _attr(zh_text, _TEXT_YELLOW, 17, bold=True)
+        zh_rect = a_zh.boundingRectWithSize_options_context_(
+            Cocoa.NSMakeSize(text_w - 32, 9999),
+            Cocoa.NSStringDrawingUsesLineFragmentOrigin,
+            None,
+        )
+        zh_h = max(zh_rect.size.height + 2, 22)
+        y += zh_h
+
         total_h = y + _PAD
         container = Cocoa.NSView.alloc().initWithFrame_(
             Cocoa.NSMakeRect(0, 0, _PANEL_W, total_h)
@@ -255,6 +277,85 @@ class ResultPanel:
             v.setFrame_(f)
             container.addSubview_(v)
 
+        # Chinese row in NSView coordinates (origin = bottom-left)
+        zh_row_y = total_h - zh_row_build_y - zh_h
+
+        # "Show Chinese" toggle button — visible initially, full row height for easy clicking
+        zh_btn = Cocoa.NSButton.alloc().initWithFrame_(
+            Cocoa.NSMakeRect(text_x, zh_row_y, 240, zh_h)
+        )
+        zh_btn.setAttributedTitle_(
+            Cocoa.NSAttributedString.alloc().initWithString_attributes_(
+                "显示中文翻译 ▾",
+                {
+                    Cocoa.NSFontAttributeName: Cocoa.NSFont.systemFontOfSize_(13),
+                    Cocoa.NSForegroundColorAttributeName: _TEXT_GRAY,
+                },
+            )
+        )
+        zh_btn.setBordered_(False)
+        zh_btn.setAlignment_(Cocoa.NSTextAlignmentLeft)
+        container.addSubview_(zh_btn)
+
+        # Chinese translation label — hidden initially, revealed on button click
+        zh_label = _make_label(
+            a_zh, Cocoa.NSMakeRect(text_x, zh_row_y, text_w - 32, zh_h)
+        )
+        zh_label.setHidden_(True)
+        container.addSubview_(zh_label)
+
+        # Copy-Chinese button — hidden initially, inline with the translation
+        zh_copy_btn = Cocoa.NSButton.alloc().initWithFrame_(
+            Cocoa.NSMakeRect(_PANEL_W - _PAD - 26, zh_row_y + (zh_h - 22) / 2, 26, 22)
+        )
+        zh_copy_btn.setTitle_("📋")
+        zh_copy_btn.setBordered_(False)
+        zh_copy_btn.setFont_(Cocoa.NSFont.systemFontOfSize_(15))
+        zh_copy_btn.setHidden_(True)
+        container.addSubview_(zh_copy_btn)
+
+        # Wire up "Show Chinese": flash ✓ feedback, then swap to translation
+        zh_handler = _ClickHandler.alloc().init()
+
+        def on_show_chinese():
+            zh_btn.setAttributedTitle_(
+                Cocoa.NSAttributedString.alloc().initWithString_attributes_(
+                    "✓",
+                    {
+                        Cocoa.NSFontAttributeName: Cocoa.NSFont.systemFontOfSize_(13),
+                        Cocoa.NSForegroundColorAttributeName: _TEXT_GREEN,
+                    },
+                )
+            )
+
+            def _reveal(_t):
+                zh_btn.setHidden_(True)
+                zh_label.setHidden_(False)
+                zh_copy_btn.setHidden_(False)
+
+            Cocoa.NSTimer.scheduledTimerWithTimeInterval_repeats_block_(0.35, False, _reveal)
+
+        zh_handler._callback = on_show_chinese
+        zh_btn.setTarget_(zh_handler)
+        zh_btn.setAction_(objc.selector(zh_handler.handleClick_, signature=b"v@:@"))
+        self._chinese_handler = zh_handler
+
+        # Wire up copy-Chinese handler
+        zh_copy_handler = _ClickHandler.alloc().init()
+
+        def on_copy_zh():
+            _copy_to_clipboard(zh_text)
+            zh_copy_btn.setTitle_("✅")
+            Cocoa.NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                1.5, False, lambda t: zh_copy_btn.setTitle_("📋")
+            )
+
+        zh_copy_handler._callback = on_copy_zh
+        zh_copy_btn.setTarget_(zh_copy_handler)
+        zh_copy_btn.setAction_(objc.selector(zh_copy_handler.handleClick_, signature=b"v@:@"))
+        self._zh_copy_handler = zh_copy_handler
+
+        # Audio button (top-left)
         btn = Cocoa.NSButton.alloc().initWithFrame_(
             Cocoa.NSMakeRect(_PAD, total_h - _PAD_TOP - btn_size, btn_size, btn_size)
         )
